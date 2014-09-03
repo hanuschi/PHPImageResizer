@@ -41,6 +41,7 @@ Class ImageController
         $image = new ImageData ();
         $image->url = $url;
         $image->enableWatermark (true);
+        $image->setWatermarkRatio (0.33);
         $image->urlWatermark = '/css/Watermark.png';
         print $image->publish ();
     }

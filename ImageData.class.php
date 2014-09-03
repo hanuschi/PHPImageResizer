@@ -103,10 +103,18 @@ Class ImageData
     protected $resizeStyleDefaultValue = 'r';
     /**
      * @var array List of resize style allowed values
+     *
+     * r = resize (only by width or height
+     * c = cut by width and height (first shrink as soon as possible
+     * cw = resize by height and if the width is higher than set param (width), cut the width
+     * ch = resize by width and if the height is higher than set param (height), cut the height
      */
     protected $resizeStyleAllowedValues = array (
         'r',
         'c',
+        'cw',
+        'ch'
+
     );
     /**
      * tl = top left
@@ -260,6 +268,29 @@ Class ImageData
     }
 
     /**
+     * Returns resource of a new image by predefined width and height
+     * @param $width int width of a new image
+     * @param $height int height of a new image
+     * @return resource
+     * @throws Exception
+     */
+    protected function createNewImage ($width, $height)
+    {
+        $image = imagecreatetruecolor ($width, $height);
+        // Check positive size
+        if (!$width || !$height) {
+            throw new Exception ("Unknown resized width or height or one value is zero!");
+        }
+        // Check transparency
+        if ($this->isImageTransparency ()){
+            imagesavealpha ($image, true);
+            $color = imagecolorallocatealpha ($image, 0, 0, 0, 127);
+            imagefill ($image, 0, 0, $color);
+        }
+        return $image;
+    }
+
+    /**
      * Takes original resource image and creates new image
      * by predefined parameters (resize, rotate, watermark)
      *
@@ -272,18 +303,9 @@ Class ImageData
         list ($origWidth, $origHeight) = getimagesize ($this->getRealImageFilePath ());
         list ($resizedWidth, $resizedHeight) = $this->getResizedImageSize ();
 
-        // Create new image
-        $image_p = imagecreatetruecolor ($resizedWidth, $resizedHeight);
-        // Check positive size
-        if (!$resizedWidth || !$resizedHeight) {
-            throw new Exception ("Unknown resized width or height or one value is zero!");
-        }
-        // Check transparency
-        if ($this->isImageTransparency ()){
-            imagesavealpha ($image_p, true);
-            $color = imagecolorallocatealpha ($image_p, 0, 0, 0, 127);
-            imagefill($image_p, 0, 0, $color);
-        }
+        // dimensions of an image stays same as a resized image
+        $image_p = $this->createNewImage ($resizedWidth, $resizedHeight);
+
         // Resize image
         switch ($this->resizeStyle ()) {
             case 'c':
@@ -294,7 +316,28 @@ Class ImageData
                 list ($originOffsetX, $originOffsetY) = $this->getOriginOffsetCutSizesByAlignStyle ();
                 imagecopyresampled ($image_p, $image, 0, 0, $originOffsetX, $originOffsetY, $minResizedWidth, $minResizedHeight, $origWidth, $origHeight);
                 break;
-            case 'r':
+            case 'cw':
+                // First resize image to the window by preset height, then cut the width by style align in case of it is higher than the preset width
+                list ($minResizedWidth, $minResizedHeight) = $this->getResizedImageSize (0, $this->height ());
+                // dimenstions are the same as resized image only in case of the final widht is higher than the ratio one
+                if ($this->width () > $minResizedWidth) {
+                    $image_p = $this->createNewImage ($minResizedWidth, $minResizedHeight);
+                }
+                // now we add an image into the created one by align style
+                list ($originOffsetX, $originOffsetY) = $this->getOriginOffsetCutSizesByAlignStyle ($minResizedWidth, $minResizedHeight);
+                imagecopyresampled ($image_p, $image, 0, 0, $originOffsetX, $originOffsetY, $minResizedWidth, $minResizedHeight, $origWidth, $origHeight);
+                break;
+            case 'ch':
+                // First resize image to the window by preset width, then cut the height by style align in case of it is higher than the preset height
+                list ($minResizedWidth, $minResizedHeight) = $this->getResizedImageSize ($this->width (), 0);
+                // dimenstions are the same as resized image only in case of the final widht is higher than the ratio one
+                if ($this->height () > $minResizedHeight) {
+                    $image_p = $this->createNewImage ($minResizedWidth, $minResizedHeight);
+                }
+                // now we add an image into the created one by align style
+                list ($originOffsetX, $originOffsetY) = $this->getOriginOffsetCutSizesByAlignStyle ($minResizedWidth, $minResizedHeight);
+                imagecopyresampled ($image_p, $image, 0, 0, $originOffsetX, $originOffsetY, $minResizedWidth, $minResizedHeight, $origWidth, $origHeight);
+                break;
             default:
                 // just resize image
                 imagecopyresampled ($image_p, $image, 0, 0, 0, 0, $resizedWidth, $resizedHeight, $origWidth, $origHeight);
@@ -328,19 +371,27 @@ Class ImageData
      *
      * Result is in array (width, height)
      *
+     * @param $width width of resized image,
+     *                if it is null the width will be set to the predefined parameter width ()
+     * @param $height height of resized image,
+     *                if it is null the height will be set to the predefined parameter height ()
+     *
      * @return array
      * @throws Exception
      */
-    public function getResizedImageSize ()
+    public function getResizedImageSize ($width = null, $height = null)
     {
+        if ($width === null) $width = $this->width ();
+        if ($height === null) $height = $this->height ();
+
         list ($origWidth, $origHeight) = getimagesize ($this->getRealImageFilePath ());
         $sizeRatio = $origWidth / $origHeight;
-        if ($this->width () > 0 && $this->height () > 0) {
-            return array (round ($this->width ()), round ($this->height ()));
-        } else if ($this->width () > 0) {
-            return array (round ($this->width ()), round ($this->width() / $sizeRatio));
-        } else if ($this->height () > 0) {
-            return array (round ($this->height () * $sizeRatio), round ($this->height ()));
+        if ($width > 0 && $height > 0) {
+            return array (round ($width), round ($height));
+        } else if ($width > 0) {
+            return array (round ($width), round ($width / $sizeRatio));
+        } else if ($height > 0) {
+            return array (round ($height * $sizeRatio), round ($height));
         }
         throw new Exception ('No image width or height has been set!');
     }
@@ -364,11 +415,14 @@ Class ImageData
      */
     public function getMinResizedImageCutSize ()
     {
-        if (!$this->width () || !$this->height ()) {
+        $width = $this->width ();
+        $height = $this->height ();
+
+        if (!$width || !$height) {
             throw new Exception ('Both width and height of the resized image must be set to cut image!');
         }
         list ($origWidth, $origHeight) = $this->getOriginImageSize ();
-        list ($resizedWidth, $resizedHeight) = $this->getResizedImageSize ();
+        list ($resizedWidth, $resizedHeight) = $this->getResizedImageSize ($width, $height);
 
         $widthRatio = $origWidth / $resizedWidth;
         $heightRatio = $origHeight / $resizedHeight;
@@ -391,15 +445,43 @@ Class ImageData
         );
     }
 
-    public function getOriginOffsetCutSizesByAlignStyle ()
+    /**
+     * Return origin offset x and y of the image to cut by predefined style align
+     *
+     * Result is in array (width, height)
+     *
+     * @param $width width of resized image,
+     *                if it is null the width will be set to the predefined parameter width ()
+     * @param $height height of resized image,
+     *                if it is null the height will be set to the predefined parameter height ()
+     *
+     * @return array
+     * @throws Exception
+     */
+    public function getOriginOffsetCutSizesByAlignStyle ($width = null, $height = null)
     {
+        // if width or height is zero, returns zero values (only resize, no cut)
+        if ($width === 0 || $height === 0) return array (0, 0);
         // get resized width and height
-        list ($minResizedWidth, $minResizedHeight) = $this->getMinResizedImageCutSize ();
+        if ($width === null && $height === null) {
+            list ($minResizedWidth, $minResizedHeight) = $this->getMinResizedImageCutSize ();
+        } else {
+            list ($minResizedWidth, $minResizedHeight) = array ($width, $height);
+        }
+        // check if values are positive
+        if (!$minResizedWidth || !$minResizedHeight) {
+            throw new Exception ('Both width and height for the image offset computing image must be set to cut image!');
+        }
+
         // get final size
         list ($resizedWidth, $resizedHeight) = $this->getResizedImageSize ();
+        list ($originWidth, $originHeight) = $this->getOriginImageSize ();
 
         $offsetX = 0;
         $offsetY = 0;
+
+        $ratioWidth   = 0; // * $originWidth / $minResizedWidth;
+        $rationHeight = 0; // * $originHeight / $minResizedHeight;
 
         switch ($this->resizeAlign ()) {
             case 'tl':    // Top left
@@ -407,37 +489,37 @@ Class ImageData
                 $offsetY = 0;
                 break;
             case 'tm':    // Top middle
-                $offsetX = 0.5 * ($minResizedWidth - $resizedWidth);
+                $offsetX = 0.5 * ($minResizedWidth - $resizedWidth) * $ratioWidth;
                 $offsetY = 0;
                 break;
             case 'tr':    // Top Right
-                $offsetX = $minResizedWidth - $resizedWidth;
+                $offsetX = ($minResizedWidth - $resizedWidth) * $ratioWidth;
                 $offsetY = 0;
                 break;
             case 'ml':    // Middle left
                 $offsetX = 0;
-                $offsetY = 0.5 * ($minResizedHeight - $resizedHeight);
+                $offsetY = 0.5 * ($minResizedHeight - $resizedHeight) * $rationHeight;
                 break;
             case '':
             case 'mm':    // Middle middle
-                $offsetX = 0.5 * ($minResizedWidth - $resizedWidth);
-                $offsetY = 0.5 * ($minResizedHeight - $resizedHeight);
+                $offsetX = 0.5 * ($minResizedWidth - $resizedWidth) * $ratioWidth;
+                $offsetY = 0.5 * ($minResizedHeight - $resizedHeight) * $rationHeight;
                 break;
             case 'mr':    // Middle right
-                $offsetX = $minResizedWidth - $resizedWidth;
-                $offsetY = 0.5 * ($minResizedHeight - $resizedHeight);
+                $offsetX = ($minResizedWidth - $resizedWidth) * $ratioWidth;
+                $offsetY = 0.5 * ($minResizedHeight - $resizedHeight) * $rationHeight;
                 break;
             case 'bl':    // Bottom left
                 $offsetX = 0;
-                $offsetY = $minResizedHeight - $resizedHeight;
+                $offsetY = ($minResizedHeight - $resizedHeight) * $rationHeight;
                 break;
             case 'bm':    // Bottom middle
-                $offsetX = 0.5 * ($minResizedWidth - $resizedWidth);
-                $offsetY = $minResizedHeight - $resizedHeight;
+                $offsetX = 0.5 * ($minResizedWidth - $resizedWidth) * $ratioWidth;
+                $offsetY = ($minResizedHeight - $resizedHeight) * $rationHeight;
                 break;
             case 'br':    // Bottom right
-                $offsetX = $minResizedWidth - $resizedWidth;
-                $offsetY = $minResizedHeight - $resizedHeight;
+                $offsetX = ($minResizedWidth - $resizedWidth) * $ratioWidth;
+                $offsetY = ($minResizedHeight - $resizedHeight) * $rationHeight;
                 break;
             default:
                 throw new Exception (sprintf ("Resize Align parameter value '%s' is not allowed!", $this->resizeAlign ()));
@@ -486,8 +568,8 @@ Class ImageData
         $options    = array ();
         $optionsArr = explode ('-', $splitUrl [count ($splitUrl) - 1]);    // last part
         foreach ($optionsArr as $option) {
-            $key   = substr($option, 0, 1);
 
+            $key   = preg_replace ("/^([a-z]+)\\:(.*)$/", '$1', $option);
             if (!$key) continue;
 
             $value = preg_replace ("/^[a-z]{1}\\:/", '', $option);
@@ -833,10 +915,14 @@ Class ImageData
         }
         $watermark = new ImageData ();
         $watermark->setUrl ($this->urlWatermark);
-        $watermark->enableWatermark (true);
-        $watermark->setWidth (round ($this->width () * $this->watermarkRatio ()));
+        $watermark->enableWatermark (false);
+        if ($this->width ()) {
+            $watermark->setWidth (round ($this->width () * $this->watermarkRatio ()));
+        } else {
+            $watermark->setHeight (round ($this->height () * $this->watermarkRatio ()));
+        }
 
-        list ($iWidth, $iHeight) = $this->getResizedImageSize ();
+        list ($iWidth, $iHeight) = array (imagesx ($image), imagesy ($image));
         list ($wWidth, $wHeight) = $watermark->getResizedImageSize ();
         $offset = min (round (0.05 * $iWidth), round (0.05 * $iHeight));
 
